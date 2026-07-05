@@ -1,0 +1,401 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// NexGenLife — Prisma Schema
+// Database: PostgreSQL (Render managed)
+// Compliance: SOC2, GDPR, ISO 27001, HIPAA-adjacent
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPPORT
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+  PENDING_VERIFICATION
+}
+
+enum SubscriptionPlan {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  PAST_DUE
+  TRIALING
+  INCOMPLETE
+  UNPAID
+}
+
+enum DocumentStatus {
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+enum OAuthProvider {
+  GOOGLE
+  GITHUB
+  MICROSOFT
+}
+
+enum AuditAction {
+  // Auth
+  USER_REGISTERED
+  USER_LOGIN
+  USER_LOGOUT
+  USER_LOGIN_FAILED
+  USER_PASSWORD_CHANGED
+  USER_PASSWORD_RESET_REQUESTED
+  USER_EMAIL_VERIFIED
+  MFA_ENABLED
+  MFA_DISABLED
+  MFA_VERIFIED
+  OAUTH_LINKED
+  OAUTH_LOGIN
+  // Account
+  USER_PROFILE_UPDATED
+  USER_DELETED
+  USER_SUSPENDED
+  USER_DATA_EXPORTED
+  CONSENT_RECORDED
+  // Documents
+  DOCUMENT_GENERATED
+  DOCUMENT_EXPORTED
+  DOCUMENT_DELETED
+  // Billing
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+  SUBSCRIPTION_CANCELLED
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  // Admin
+  ADMIN_ACTION
+  // Security
+  RATE_LIMIT_HIT
+  SUSPICIOUS_ACTIVITY
+}
+
+enum DataRegion {
+  EU
+  US
+  UK
+  APAC
+  AFRICA
+  GLOBAL
+}
+
+// ── Models ────────────────────────────────────────────────────────────────────
+
+model User {
+  id                    String             @id @default(uuid())
+  email                 String             @unique
+  passwordHash          String?
+  emailVerified         Boolean            @default(false)
+  emailVerifiedAt       DateTime?
+  role                  UserRole           @default(USER)
+  status                UserStatus         @default(PENDING_VERIFICATION)
+
+  // Profile
+  fullName              String?
+  organisation          String?
+  jobTitle              String?
+  country               String?
+  phone                 String?
+  avatarUrl             String?
+
+  // MFA
+  mfaEnabled            Boolean            @default(false)
+  mfaSecret             String?            // Encrypted TOTP secret
+  mfaEnabledAt          DateTime?
+
+  // Data Privacy / GDPR / SOC2
+  privacyPolicyAccepted Boolean            @default(false)
+  privacyPolicyVersion  String?
+  privacyAcceptedAt     DateTime?
+  termsAcceptedAt       DateTime?
+  dataRegion            DataRegion         @default(GLOBAL)
+  marketingConsent      Boolean            @default(false)
+  marketingConsentAt    DateTime?
+  dataRetentionUntil    DateTime?
+  deletionRequestedAt   DateTime?
+
+  // Metadata
+  lastLoginAt           DateTime?
+  lastLoginIp           String?
+  loginCount            Int                @default(0)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  // Relations
+  oauthAccounts         OAuthAccount[]
+  sessions              Session[]
+  subscription          Subscription?
+  documents             Document[]
+  auditLogs             AuditLog[]
+  passwordResets        PasswordReset[]
+  emailVerifications    EmailVerification[]
+  apiKeys               ApiKey[]
+  dataExports           DataExport[]
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model OAuthAccount {
+  id                String        @id @default(uuid())
+  userId            String
+  provider          OAuthProvider
+  providerAccountId String
+  accessToken       String?
+  refreshToken      String?
+  idToken           String?
+  tokenExpiry       DateTime?
+  scope             String?
+  profileData       Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+model Session {
+  id            String    @id @default(uuid())
+  userId        String
+  refreshToken  String    @unique
+  userAgent     String?
+  ipAddress     String?
+  isValid       Boolean   @default(true)
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+  lastUsedAt    DateTime  @default(now())
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordReset {
+  id          String    @id @default(uuid())
+  userId      String
+  token       String    @unique
+  usedAt      DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("password_resets")
+}
+
+model EmailVerification {
+  id          String    @id @default(uuid())
+  userId      String
+  token       String    @unique
+  usedAt      DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@map("email_verifications")
+}
+
+model Subscription {
+  id                     String             @id @default(uuid())
+  userId                 String             @unique
+  plan                   SubscriptionPlan
+  status                 SubscriptionStatus
+  stripeCustomerId       String?            @unique
+  stripeSubscriptionId   String?            @unique
+  stripePriceId          String?
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  cancelAtPeriodEnd      Boolean            @default(false)
+  cancelledAt            DateTime?
+  trialStart             DateTime?
+  trialEnd               DateTime?
+  docsUsedThisMonth      Int                @default(0)
+  docsLimitPerMonth      Int                @default(10)
+  lastUsageResetAt       DateTime           @default(now())
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments               Payment[]
+
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model Payment {
+  id                   String    @id @default(uuid())
+  subscriptionId       String
+  stripePaymentIntentId String?  @unique
+  stripeInvoiceId      String?   @unique
+  amount               Int       // in cents
+  currency             String    @default("usd")
+  status               String
+  paidAt               DateTime?
+  failureReason        String?
+  receiptUrl           String?
+  createdAt            DateTime  @default(now())
+
+  subscription         Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([stripePaymentIntentId])
+  @@map("payments")
+}
+
+model Document {
+  id              String         @id @default(uuid())
+  userId          String
+  title           String
+  documentType    String
+  jurisdiction    String
+  product         String?
+  indication      String?
+  promptUsed      String?        @db.Text
+  content         String?        @db.Text
+  status          DocumentStatus @default(GENERATING)
+  tokenCount      Int?
+  generationMs    Int?
+  modelUsed       String?
+  exportedAt      DateTime?
+  exportFormat    String?
+  deletedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@map("documents")
+}
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  userId      String
+  name        String
+  keyHash     String    @unique
+  keyPrefix   String
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([keyHash])
+  @@index([userId])
+  @@map("api_keys")
+}
+
+// ── SOC2 / ISO 27001 Audit Log ────────────────────────────────────────────────
+model AuditLog {
+  id            String      @id @default(uuid())
+  userId        String?
+  action        AuditAction
+  resource      String?
+  resourceId    String?
+  ipAddress     String?
+  userAgent     String?
+  success       Boolean     @default(true)
+  failureReason String?
+  metadata      Json?
+  dataRegion    DataRegion  @default(GLOBAL)
+  retainUntil   DateTime
+  createdAt     DateTime    @default(now())
+
+  user          User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([retainUntil])
+  @@index([ipAddress])
+  @@map("audit_logs")
+}
+
+// ── GDPR Data Export Requests ─────────────────────────────────────────────────
+model DataExport {
+  id              String    @id @default(uuid())
+  userId          String
+  requestedAt     DateTime  @default(now())
+  completedAt     DateTime?
+  expiresAt       DateTime?
+  downloadUrl     String?
+  status          String    @default("PENDING")
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("data_exports")
+}
+
+// ── Enterprise Inquiries ──────────────────────────────────────────────────────
+model EnterpriseInquiry {
+  id           String   @id @default(uuid())
+  name         String
+  email        String
+  organisation String
+  teamSize     String?
+  message      String   @db.Text
+  status       String   @default("NEW")
+  assignedTo   String?
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@map("enterprise_inquiries")
+}
+
+// ── Compliance & Privacy Policies ─────────────────────────────────────────────
+model PolicyVersion {
+  id          String   @id @default(uuid())
+  type        String   // privacy_policy | terms_of_service
+  version     String
+  content     String   @db.Text
+  effectiveAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@unique([type, version])
+  @@map("policy_versions")
+}
