@@ -41,7 +41,7 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://cdnjs.cloudflare.com", "https://js.stripe.com"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://*.supabase.co", "https://api.anthropic.com", "https://api.stripe.com", "https://formspree.io"],
+      connectSrc: ["'self'", "https://nexgenlife.onrender.com", "https://nesgenlife.studio", "https://api.anthropic.com", "https://api.stripe.com", "https://formspree.io"],
       frameSrc: ["'self'", "https://js.stripe.com", "https://hooks.stripe.com"],
       fontSrc: ["'self'", "https:", "data:"],
     },
@@ -52,17 +52,25 @@ app.use(helmet({
 }));
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean);
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://nesgenlife.studio,https://nexgenlife.onrender.com')
+  .split(',').map(o => o.trim()).filter(Boolean);
+
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    cb(new Error('Not allowed by CORS'));
+  origin: function(origin, cb) {
+    // Allow requests with no origin (mobile apps, curl, Render health checks)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    logger.warn(`CORS blocked origin: ${origin}`);
+    cb(new Error('Not allowed by CORS: ' + origin));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
   exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining'],
 }));
+
+// Explicitly handle preflight for all routes
+app.options('*', cors());
 
 // ── Stripe webhook MUST use raw body ─────────────────────────────────────────
 app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
