@@ -432,7 +432,7 @@ footer a:hover{color:var(--text)}
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>
+<!-- Supabase SDK removed — auth now handled by Express backend -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
@@ -1678,7 +1678,7 @@ function toast(msg, type) {
 // NEXGENLIFE LIVE DEMO — AI Document Generator
 // ═══════════════════════════════════════════════════════════════════════
 
-var _ldpKey = ['sk-ant-api03-EVvE3iljKO2m2g','GI3J8wYSTCAWUvosoz_ztkzZ_Vu','-AVhF1C0P7ZXer9GaHzHeEBLOmp','yqvB2sImx-TpmXBN5w-cF22ZQAA'].join(''); // embedded
+var _ldpKey = ''; // API key handled server-side — no client key needed
 var _ldpContent = '';
 var _ldpRunning = false;
 
@@ -1775,16 +1775,9 @@ function ldpExample(type, product, indication, jurisdiction) {
   if (cfg) cfg.scrollTop = 0;
 }
 
-// Save API key
+// API key managed server-side — show connection status only
 function ldpSaveKey() {
-  var key = (document.getElementById('ldpApiKey')||{}).value || '';
-  if (!key.trim()) { ldpSetStatus('Enter your API key', 'err'); return; }
-  if (!key.startsWith('sk-ant-')) { ldpSetStatus('Key must start with sk-ant-', 'err'); return; }
-  _ldpKey = key.trim();
-  localStorage.setItem('ngl_key', _ldpKey);
-  var bar = document.getElementById('ldpApiBar');
-  if (bar) bar.style.background = 'rgba(0,200,255,.06)';
-  ldpSetStatus('Connected ✓', 'ok');
+  ldpSetStatus('Connected via NexGenLife ✓', 'ok');
   setTimeout(function(){ ldpSetStatus('Ready'); }, 2000);
 }
 
@@ -1798,11 +1791,8 @@ function ldpSetStatus(txt, type) {
 // Open demo modal
 function openLiveDemo() {
   openModal('liveDemoModal');
-  if (_ldpKey) {
-    var inp = document.getElementById('ldpApiKey');
-    if (inp) inp.value = _ldpKey;
-    ldpSetStatus('Connected ✓', 'ok');
-  }
+  ldpSetStatus('Connected via NexGenLife ✓', 'ok');
+  setTimeout(function(){ ldpSetStatus('Ready'); }, 2000);
   // Reset to empty state
   var em = document.getElementById('ldpEmpty');
   var th = document.getElementById('ldpThinking');
@@ -1820,8 +1810,6 @@ async function ldpGenerate() {
   // ── Free trial gate ──────────────────────────────────────────
   if (!nglTrialOk()) return;
   // ────────────────────────────────────────────────────────────
-
-  var key = ['sk-ant-api03-EVvE3iljKO2m2g','GI3J8wYSTCAWUvosoz_ztkzZ_Vu','-AVhF1C0P7ZXer9GaHzHeEBLOmp','yqvB2sImx-TpmXBN5w-cF22ZQAA'].join('');
 
   var docType     = (document.getElementById('ldpDocType')     ||{}).value || 'sop';
   var product     = (document.getElementById('ldpProduct')     ||{}).value || 'Product';
@@ -1874,33 +1862,26 @@ async function ldpGenerate() {
   _ldpContent = '';
 
   try {
-    // Always call Anthropic directly from browser — no proxy needed
-    var apiEndpoint = 'https://api.anthropic.com/v1/messages';
-    var fetchHeaders = {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    };
+    // ── Call our secure backend — API key never exposed to browser ────────
+    var apiEndpoint = '/api/documents/generate';
+    var authToken   = _nglGetToken();
+
     var resp = await fetch(apiEndpoint, {
       method: 'POST',
-      headers: fetchHeaders,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authToken ? 'Bearer ' + authToken : '',
+        'X-Request-ID': crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+      },
       body: JSON.stringify({
-
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
-        stream: true,
-        system: sysprompt,
-        messages: [{
-          role: 'user',
-          content: _ldpImages && _ldpImages.length
-            ? _ldpImages.map(function(img) {
-                var b64 = img.content.split(',')[1] || img.content;
-                var mime = img.content.startsWith('data:') ? img.content.split(';')[0].slice(5) : 'image/jpeg';
-                return { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } };
-              }).concat([{ type: 'text', text: userPrompt }])
-            : userPrompt
-        }],
+        documentType: docType,
+        jurisdiction: jurisdiction,
+        product:      product,
+        indication:   indication,
+        context:      context,
+        systemPrompt: sysprompt,
+        userPrompt:   userPrompt,
+        images:       _ldpImages || [],
       }),
     });
 
@@ -1944,50 +1925,45 @@ async function ldpGenerate() {
     var contentEl = document.getElementById('ldpDocContent');
     if (contentEl) contentEl.innerHTML = '<span class="ldp-cursor"></span>';
     document.getElementById('ldpOutTitle').textContent = docName + ' — Generating…';
-    ldpSetStatus('Streaming…');
+    ldpSetStatus('Generating…');
 
-    // Stream response
-    var reader = resp.body.getReader();
-    var dec    = new TextDecoder();
-    var buf    = '';
+    // ── Parse JSON response from backend ─────────────────────────────────
+    var data = await resp.json();
 
-    while (true) {
-      var r = await reader.read();
-      if (r.done) break;
-      buf += dec.decode(r.value, { stream: true });
-      var lines = buf.split('\n');
-      buf = lines.pop();
-      for (var ln of lines) {
-        ln = ln.trim();
-        if (!ln.startsWith('data:')) continue;
-        var json = ln.slice(5).trim();
-        if (json === '[DONE]') continue;
-        try {
-          var ev = JSON.parse(json);
-          if (ev.type === 'content_block_delta' && ev.delta && ev.delta.text) {
-            _ldpContent += ev.delta.text;
-            if (contentEl) {
-              contentEl.innerHTML = ldpMdR(_ldpContent) + '<span class="ldp-cursor"></span>';
-              // Scroll to bottom
-              var docEl = document.getElementById('ldpDoc');
-              if (docEl) docEl.scrollTop = docEl.scrollHeight;
-            }
-          } else if (ev.type === 'error') {
-            // Mid-stream error from the API — never expose raw credit/billing details
-            var streamRawMsg = ((ev.error && ev.error.message) || '').toLowerCase();
-            var streamErrMsg;
-            if (streamRawMsg.includes('credit balance') || streamRawMsg.includes('insufficient') || streamRawMsg.includes('billing')) {
-              streamErrMsg = 'Document generation is temporarily unavailable. Please try again shortly, or contact support@corverxis.com if this continues.';
-            } else {
-              streamErrMsg = 'Document generation was interrupted. Please try again, or contact support@corverxis.com if this continues.';
-            }
-            throw new Error(streamErrMsg);
-          }
-        } catch(e) {
-          if (e instanceof Error && e.message && e.message.indexOf('contact support@corverxis.com') !== -1) throw e;
-          // Otherwise swallow JSON parse noise from partial chunks
+    if (!resp.ok || !data.success) {
+      var rawMsg = (data.error || '').toLowerCase();
+      var errMsg;
+      if (resp.status === 401 || resp.status === 403) {
+        if (data.code === 'SUBSCRIPTION_REQUIRED') {
+          errMsg = 'An active subscription is required. Please choose a plan to continue.';
+          showNglUpgradeWall();
+        } else {
+          errMsg = 'Session expired — please sign in again.';
         }
+      } else if (resp.status === 429) {
+        errMsg = data.error || 'Too many requests right now — please wait a moment and try again.';
+      } else if (rawMsg.includes('credit') || rawMsg.includes('billing') || rawMsg.includes('insufficient')) {
+        errMsg = 'Document generation is temporarily unavailable. Please try again shortly, or contact support@corverxis.com if this continues.';
+      } else {
+        errMsg = data.error || 'Document generation failed. Please try again.';
       }
+      throw new Error(errMsg);
+    }
+
+    _ldpContent = data.document.content || '';
+
+    // Animate the content appearing progressively
+    var words = _ldpContent.split(' ');
+    var rendered = '';
+    var chunkSize = 20;
+    for (var i = 0; i < words.length; i += chunkSize) {
+      rendered = words.slice(0, i + chunkSize).join(' ');
+      if (contentEl) {
+        contentEl.innerHTML = ldpMdR(rendered) + '<span class="ldp-cursor"></span>';
+        var docEl = document.getElementById('ldpDoc');
+        if (docEl) docEl.scrollTop = docEl.scrollHeight;
+      }
+      await new Promise(function(r){ setTimeout(r, 18); });
     }
 
     // Final render — remove cursor
@@ -2485,17 +2461,12 @@ async function submitEnterpriseForm() {
   if (errEl) errEl.style.display = 'none';
 
   try {
-    var resp = await fetch(ENTERPRISE_FORMSPREE_ENDPOINT, {
+    var resp = await fetch('/api/enterprise/inquiry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({
-        _subject: 'NexGenLife Enterprise Inquiry — ' + org,
-        name: name,
-        email: email,
-        organisation: org,
-        team_size: size,
-        message: message,
-        source: 'NexGenLife Enterprise Form'
+        name: name, email: email, organisation: org,
+        team_size: size, message: message, source: 'NexGenLife Enterprise Form'
       })
     });
 
@@ -2948,62 +2919,34 @@ var STRIPE_LINKS = {
 };
 window._nglCurrentUser = null;
 
-// ── Supabase project config ──────────────────────────────────────
-var NGL_SUPABASE_URL = 'https://bvwgqafekmfqpylsrteu.supabase.co';
-var NGL_SUPABASE_KEY = 'sb_publishable_giKFkcglGwHs2ezDp0UsKQ_tmZ3QJis';
-
-function _nglSB() {
-  if (!window._nglSupabase) {
-    try {
-      window._nglSupabase = supabase.createClient(NGL_SUPABASE_URL, NGL_SUPABASE_KEY, {
-        auth: {
-          autoRefreshToken: true,
-          persistSession: true,
-          detectSessionInUrl: true,
-          storage: window.localStorage,
-          storageKey: 'ngl_auth_token',
-          flowType: 'implicit'
-        }
-      });
-    } catch(e) {
-      console.error('Supabase init error:', e);
-      authMsg('Connection error — please refresh and try again.', 'err');
-      return null;
-    }
-  }
-  return window._nglSupabase;
-}
+// Supabase SDK fully removed — auth handled by Express backend via _nglApiFetch
 
 function onNglSignedIn(user) {
   window._nglCurrentUser = user;
-  var name = (user.user_metadata && user.user_metadata.full_name)
-    ? user.user_metadata.full_name : user.email.split('@')[0];
-  var plan = (user.user_metadata && user.user_metadata.plan) || '';
-  var paid = !!(user.user_metadata && user.user_metadata.paid);
+  // Backend returns flat user object: { fullName, email, role, subscription: { plan, status } }
+  var name = user.fullName || user.email.split('@')[0];
+  var sub  = user.subscription || null;
+  var plan = sub ? sub.plan : '';
+  var paid = !!(sub && sub.status === 'ACTIVE');
 
   var wall   = document.getElementById('authWall');
   var bar    = document.getElementById('authUserBar');
   var nameEl = document.getElementById('authUserName');
   if (wall)   wall.style.display  = 'none';
   if (bar)    bar.style.display   = 'flex';
-  if (nameEl) nameEl.textContent  = name + (plan ? ' · ' + plan.charAt(0).toUpperCase() + plan.slice(1) : '');
+  if (nameEl) nameEl.textContent  = name + (plan ? ' · ' + plan.charAt(0).toUpperCase() + plan.slice(1).toLowerCase() : '');
 
   if (paid && plan) {
-    // Paid subscriber — full access, hide paywall
     hidepaywall();
     toast('Welcome back, ' + name + ' ✓', 'ok');
   } else if (NGL_FREE_LIMIT === 0) {
-    // No free trial at all — straight to paywall
     showNglUpgradeWall();
   } else {
-    // Free trial user — check how many docs they've used
-    hidepaywall(); // make sure paywall is hidden first
+    hidepaywall();
     var used = parseInt(localStorage.getItem('ngl_trial_used') || '0');
     if (used >= NGL_FREE_LIMIT) {
-      // Trial exhausted — show paywall
       showNglUpgradeWall();
     } else {
-      // Still has free docs — let them in normally
       toast('Welcome back, ' + name + ' · ' + (NGL_FREE_LIMIT - used) + ' free doc' + (NGL_FREE_LIMIT - used === 1 ? '' : 's') + ' remaining', 'ok');
     }
     nglUpdateTrialBadge();
@@ -3234,7 +3177,9 @@ async function mfaVerifySubmit() {
 function mfaVerifyCancel() {
   document.getElementById('mfaVerifyScreen').style.display = 'none';
   _mfaPendingUser = null;
-  var sb = _nglSB(); if (sb) sb.auth.signOut();
+  // Sign out via backend so the session is invalidated server-side
+  _nglApiFetch('/auth/logout', 'POST', { refreshToken: _nglGetRefreshToken() }).catch(function(){});
+  _nglClearTokens();
   var wall = document.getElementById('authWall');
   if (wall) wall.style.display = 'flex';
 }
@@ -3256,80 +3201,68 @@ function checkSubscription(user) {
   return false;
 }
 
-// Check URL for Supabase password recovery token
+// ── Session init handled by backend session check IIFE below ─────
 (function() {
-  var hash = window.location.hash;
-  if (hash && (hash.includes('type=recovery') || hash.includes('access_token'))) {
+  // Check URL for password reset token
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('token') && params.get('type') === 'reset') {
     var wall = document.getElementById('authWall');
     if (wall) wall.style.display = 'flex';
-    if (hash.includes('type=recovery')) showUpdatePasswordForm();
-    return;
+    showUpdatePasswordForm(); return;
   }
 
-  var sb = _nglSB();
-  if (!sb) return;
-
-  // Show a subtle loading state while checking session
-  var wall = document.getElementById('authWall');
-  authMsg('Checking session…', 'ok');
-
-  sb.auth.getSession().then(function(r) {
-    authMsg('', '');
-    if (r.error) {
-      console.warn('Session check error:', r.error.message);
-      if (wall) wall.style.display = 'flex';
-      return;
-    }
-    if (r.data && r.data.session && r.data.session.user) {
-      onNglSignedIn(r.data.session.user);
-    } else {
-      if (wall) wall.style.display = 'flex';
-    }
-  }).catch(function(e) {
-    console.error('Session fetch failed:', e);
-    authMsg('', '');
-    if (wall) wall.style.display = 'flex';
-  });
-
-  // Listen for auth state changes (sign in, sign out, token refresh, email confirm)
-  sb.auth.onAuthStateChange(function(event, session) {
-    console.log('Auth event:', event);
-    if (event === 'PASSWORD_RECOVERY') {
-      showUpdatePasswordForm(); return;
-    }
-    if (event === 'SIGNED_IN' && session && session.user) {
-      // Skip if we're in the middle of handling signup ourselves
-      if (_nglHandlingSignup) return;
-      onNglSignedIn(session.user);
-    }
-    if (event === 'SIGNED_OUT') {
-      window._nglCurrentUser = null;
-    }
-    if (event === 'TOKEN_REFRESHED' && session && session.user) {
-      window._nglCurrentUser = session.user;
-    }
-  });
+  // Check for existing session via backend
+  var token = _nglGetToken();
+  if (token) {
+    _nglApiFetch('/auth/me','GET').then(function(resp){
+      resp.json().then(function(data){
+        if (resp.ok && data.user) {
+          onNglSignedIn(data.user);
+        } else {
+          // Token invalid/expired — try refresh
+          var rt = _nglGetRefreshToken();
+          if (rt) {
+            _nglApiFetch('/auth/refresh','POST',{refreshToken:rt}).then(function(r2){
+              r2.json().then(function(d2){
+                if(r2.ok && d2.accessToken){ _nglStoreTokens(d2.accessToken,d2.refreshToken); onNglSignedIn(d2.user); }
+                else { _nglClearTokens(); var w=document.getElementById('authWall'); if(w) w.style.display='flex'; }
+              });
+            }).catch(function(){ _nglClearTokens(); var w=document.getElementById('authWall'); if(w) w.style.display='flex'; });
+          } else {
+            var w=document.getElementById('authWall'); if(w) w.style.display='flex';
+          }
+        }
+      });
+    }).catch(function(){
+      var w=document.getElementById('authWall'); if(w) w.style.display='flex';
+    });
+  } else {
+    var w = document.getElementById('authWall'); if (w) w.style.display = 'flex';
+  }
 })();
 
-// ── After Stripe payment — grant access ──────────────────────────
+// ── After Stripe payment — refresh user profile from backend ─────────────
 (function() {
   var params = new URLSearchParams(window.location.search);
   if (params.get('session_id') || params.get('success')) {
     var plan = localStorage.getItem('ngl_pending_plan') || 'starter';
-    var sb = _nglSB(); if (!sb) return;
-    sb.auth.getSession().then(function(r) {
-      if (!r.data || !r.data.session) return;
-      var user = r.data.session.user;
-      sb.auth.updateUser({data:{plan:plan,paid:true,paidAt:new Date().toISOString()}});
-      window._nglCurrentUser = user;
-      localStorage.removeItem('ngl_pending_plan');
-      localStorage.setItem('ngl_trial_used', '-1'); // mark as paid
-      var nameEl = document.getElementById('authUserName');
-      var name = (user.user_metadata && user.user_metadata.full_name) || user.email.split('@')[0];
-      if (nameEl) nameEl.textContent = name + ' · ' + plan.charAt(0).toUpperCase() + plan.slice(1);
-      hidepaywall();
-      toast('Welcome to NexGenLife ' + plan.charAt(0).toUpperCase() + plan.slice(1) + '! Full access granted ✓', 'ok');
-      history.replaceState(null,'',window.location.pathname);
+    var token = _nglGetToken();
+    if (!token) return;
+    // Refresh user profile — backend webhook already updated subscription
+    _nglApiFetch('/api/users/me','GET').then(function(resp){
+      resp.json().then(function(data){
+        if (!resp.ok || !data.user) return;
+        var user = data.user;
+        window._nglCurrentUser = user;
+        localStorage.removeItem('ngl_pending_plan');
+        var nameEl = document.getElementById('authUserName');
+        var name = user.fullName || user.email.split('@')[0];
+        if (nameEl) nameEl.textContent = name + ' · ' + plan.charAt(0).toUpperCase() + plan.slice(1);
+        hidepaywall();
+        nglUpdateTrialBadge();
+        toast('Welcome to NexGenLife ' + plan.charAt(0).toUpperCase() + plan.slice(1) + '! Full access granted ✓', 'ok');
+        history.replaceState(null,'',window.location.pathname);
+      });
     });
   }
 })();
@@ -3360,31 +3293,20 @@ async function authSignIn(){
   var pass=(document.getElementById('siPass')||{}).value||'';
   if(!email||!email.includes('@')){authMsg('Enter a valid email address.','err');return;}
   if(!pass){authMsg('Enter your password.','err');return;}
-  var sb=_nglSB(); if(!sb){authMsg('Connection error — please refresh the page.','err');return;}
   authMsg('Signing in…','ok');
-  var r=await sb.auth.signInWithPassword({email:email,password:pass});
-  if(r.error){
-    var raw=r.error.message||'';
-    var code=r.error.status||0;
-    console.warn('Supabase sign-in error:', raw, 'code:', code);
-    var msg;
-    if(raw.includes('Email not confirmed')||raw.includes('not confirmed')){
-      msg='Your email address hasn\'t been confirmed yet. Please check your inbox for a verification link, then try again.';
-    } else if(raw.includes('Invalid login credentials')||raw.includes('invalid_credentials')||code===400){
-      msg='Email or password is incorrect. Please check and try again.';
-    } else if(raw.includes('User not found')){
-      msg='No account found with that email. Please create an account first.';
-    } else if(raw.includes('rate limit')||raw.includes('too many')||code===429){
-      msg='Too many attempts — please wait a minute and try again.';
-    } else {
-      msg='Sign-in failed: '+raw;
+  try {
+    var resp=await _nglApiFetch('/auth/login','POST',{email:email,password:pass});
+    var data=await resp.json();
+    if(!resp.ok){
+      var msg=data.error||'Sign in failed';
+      if(msg.includes('not confirmed')){msg='Your email hasn\'t been confirmed. Please check your inbox for a verification link.';}
+      authMsg(msg,'err'); return;
     }
-    authMsg(msg,'err');
-    return;
-  }
-  // Check if this user has MFA enrolled before granting full access
-  await _checkMfaAfterSignIn(r.data.user);
+    _nglStoreTokens(data.accessToken,data.refreshToken);
+    await _checkMfaAfterSignIn(data.user);
+  } catch(e){ console.error('Auth error:', e); authMsg('Error: ' + (e.message||e), 'err'); }
 }
+
 async function authSignUp(){
   var name=(document.getElementById('suName')||{}).value.trim()||'';
   var email=(document.getElementById('suEmail')||{}).value.trim()||'';
@@ -3394,69 +3316,27 @@ async function authSignUp(){
   var agreed=agreedEl?agreedEl.checked:false;
   if(!name){authMsg('Enter your full name','err');return;}
   if(!email||!email.includes('@')){authMsg('Enter a valid email','err');return;}
-  if(!pass||pass.length<6){authMsg('Password must be at least 6 characters','err');return;}
+  if(!pass||pass.length<8){authMsg('Password must be at least 8 characters','err');return;}
   if(!agreed){
     authMsg('Please agree to the Privacy Policy and Terms of Service to continue.','err');
-    if(agreedEl){
-      agreedEl.parentElement.style.color='#FF8070';
-      agreedEl.focus();
-      setTimeout(function(){ if(agreedEl.parentElement) agreedEl.parentElement.style.color=''; },2500);
-    }
+    if(agreedEl){agreedEl.parentElement.style.color='#FF8070';agreedEl.focus();setTimeout(function(){if(agreedEl.parentElement)agreedEl.parentElement.style.color='';},2500);}
     return;
   }
-  var sb=_nglSB(); if(!sb){authMsg('Connection error — please refresh.','err');return;}
-
-  _nglHandlingSignup = true; // block onAuthStateChange from interfering
   authMsg('Creating account…','ok');
-
-  var r=await sb.auth.signUp({
-    email:email,
-    password:pass,
-    options:{
-      data:{full_name:name,organisation:org,privacy_agreed:true,privacy_agreed_at:new Date().toISOString()},
-      emailRedirectTo:window.location.href
+  try {
+    var resp=await _nglApiFetch('/auth/register','POST',{fullName:name,email:email,organisation:org,password:pass,privacyPolicyAccepted:'true',termsAccepted:'true'});
+    var data=await resp.json();
+    if(!resp.ok){
+      var msg=data.error||'Sign up failed';
+      if(msg.includes('already exists')){authMsg('Account already exists — please sign in.','err');setTimeout(function(){authTab('signin');var el=document.getElementById('siEmail');if(el)el.value=email;},1500);return;}
+      authMsg(msg,'err'); return;
     }
-  });
-  if(r.error){
-    _nglHandlingSignup = false;
-    var msg=r.error.message||'Sign up failed';
-    if(msg.includes('rate limit')||msg.includes('sending')){
-      authMsg('⚠ Almost there! Signing you in now…','ok');
-      var r2=await sb.auth.signInWithPassword({email:email,password:pass});
-      if(!r2.error&&r2.data&&r2.data.user){_nglBootNewUser(r2.data.user,name,org);return;}
-      authMsg('Account created — please sign in with your email and password.','ok');
-      setTimeout(function(){authTab('signin');document.getElementById('siEmail').value=email;},1500);
-      return;
-    }
-    if(msg.includes('already registered')||msg.includes('already')){
-      authMsg('Account already exists — signing you in…','ok');
-      var r3=await sb.auth.signInWithPassword({email:email,password:pass});
-      if(!r3.error&&r3.data&&r3.data.user){_nglHandlingSignup=false;onNglSignedIn(r3.data.user);return;}
-      authMsg('Account exists — please use the Sign In tab.','err');
-      setTimeout(function(){authTab('signin');document.getElementById('siEmail').value=email;},1500);
-      return;
-    }
-    authMsg(msg,'err');return;
+    _nglStoreTokens(data.accessToken,data.refreshToken);
+    _nglBootNewUser(data.user,name,org);
+  } catch(e){
+    console.error('authSignIn error:', e);
+    authMsg('Connection error: ' + (e.message || e) + ' — please try again.','err');
   }
-
-  // signUp succeeded — now immediately sign in to get a real persisted session
-  authMsg('Account created! Signing you in…','ok');
-  var signInResult=await sb.auth.signInWithPassword({email:email,password:pass});
-  if(signInResult.error){
-    _nglHandlingSignup = false;
-    var emsg=signInResult.error.message||'';
-    if(emsg.includes('not confirmed')||emsg.includes('Email not confirmed')){
-      authMsg('✓ Account created! Check your email to confirm it, then sign in here.','ok');
-      setTimeout(function(){authTab('signin');document.getElementById('siEmail').value=email;},3500);
-    } else {
-      authMsg('✓ Account created! Please sign in below.','ok');
-      setTimeout(function(){authTab('signin');document.getElementById('siEmail').value=email;},2000);
-    }
-    return;
-  }
-  // Success — boot the new user in, then release the guard
-  _nglBootNewUser(signInResult.data.user,name,org);
-  setTimeout(function(){ _nglHandlingSignup = false; }, 500);
 }
 
 function _nglBootNewUser(user,name,org){
@@ -3464,24 +3344,24 @@ function _nglBootNewUser(user,name,org){
   var wall=document.getElementById('authWall');if(wall)wall.style.display='none';
   var bar=document.getElementById('authUserBar');if(bar)bar.style.display='flex';
   var nameEl=document.getElementById('authUserName');
-  var displayName=name||(user.user_metadata&&user.user_metadata.full_name)||user.email.split('@')[0];
+  var displayName=name||(user.fullName)||user.email.split('@')[0];
   if(nameEl)nameEl.textContent=displayName;
-
-  if (NGL_FREE_LIMIT > 0) {
-    // Free trial enabled — set up fresh trial for new user
+  if(NGL_FREE_LIMIT>0){
     localStorage.setItem('ngl_trial_used','0');
-    hidepaywall();
-    nglUpdateTrialBadge();
+    hidepaywall(); nglUpdateTrialBadge();
     toast('Welcome to NexGenLife, '+displayName+'! You have '+NGL_FREE_LIMIT+' free document'+(NGL_FREE_LIMIT===1?'':'s')+'.','ok');
   } else {
-    // No free trial — go straight to paywall
     toast('Account created! Choose a plan to get started.','ok');
     showNglUpgradeWall();
   }
 }
+
 async function authSignOut(){
-  var sb=_nglSB(); if(sb) await sb.auth.signOut();
-  // Clear trial state so it reloads cleanly
+  try {
+    var rt=_nglGetRefreshToken();
+    await _nglApiFetch('/auth/logout','POST',{refreshToken:rt});
+  } catch(e){}
+  _nglClearTokens();
   window._nglCurrentUser = null;
   window.location.reload();
 }
@@ -3539,10 +3419,10 @@ async function doResetPassword(){
   var email=(document.getElementById('resetEmail')||{}).value.trim()||'';
   if(!email||!email.includes('@')){authMsg('Enter your account email','err');return;}
   authMsg('Sending reset email…','ok');
-  var sb=_nglSB(); if(!sb){authMsg('Connection error — please refresh.','err');return;}
-  var r=await sb.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin+window.location.pathname+'?reset=1'});
-  if(r.error){authMsg(r.error.message||'Reset failed','err');return;}
-  authMsg('\u2713 Reset link sent! Check your inbox.','ok');
+  try {
+    await _nglApiFetch('/auth/forgot-password','POST',{email:email});
+    authMsg('✓ If that email exists, a reset link has been sent. Check your inbox.','ok');
+  } catch(e){ console.error('Auth error:', e); authMsg('Error: ' + (e.message||e), 'err'); }
 }
 function showUpdatePasswordForm(){
   authTab('signin');showResetForm(true);
@@ -3553,20 +3433,24 @@ function showUpdatePasswordForm(){
   var fsr=document.getElementById('formReset');
   if(fsr&&!document.getElementById('newPass')){
     var np=document.createElement('input');
-    np.id='newPass';np.type='password';np.placeholder='New password (min. 6 characters)';
+    np.id='newPass';np.type='password';np.placeholder='New password (min. 8 characters)';
     np.style.cssText='width:100%;background:var(--panel);border:1px solid var(--b2);border-radius:7px;padding:11px 13px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none;margin-bottom:14px;box-sizing:border-box';
     fsr.insertBefore(np,btn);
   }
 }
 async function doUpdatePassword(){
   var pass=(document.getElementById('newPass')||{}).value||'';
-  if(!pass||pass.length<6){authMsg('Password must be at least 6 characters','err');return;}
-  var sb=_nglSB(); if(!sb){authMsg('Connection error — please refresh.','err');return;}
-  var r=await sb.auth.updateUser({password:pass});
-  if(r.error){authMsg(r.error.message||'Update failed','err');return;}
-  authMsg('\u2713 Password updated! Signing you in…','ok');
-  history.replaceState(null,'',window.location.pathname);
-  setTimeout(function(){sb.auth.getSession().then(function(res){if(res.data&&res.data.session)onNglSignedIn(res.data.session.user);});},1200);
+  var token=new URLSearchParams(window.location.search).get('token')||'';
+  if(!pass||pass.length<8){authMsg('Password must be at least 8 characters','err');return;}
+  if(!token){authMsg('Invalid reset link — please request a new one.','err');return;}
+  try {
+    var resp=await _nglApiFetch('/auth/reset-password','POST',{token:token,password:pass});
+    var data=await resp.json();
+    if(!resp.ok){authMsg(data.error||'Update failed','err');return;}
+    authMsg('✓ Password updated! Please sign in with your new password.','ok');
+    history.replaceState(null,'',window.location.pathname);
+    setTimeout(function(){authTab('signin');},2000);
+  } catch(e){ console.error('Auth error:', e); authMsg('Error: ' + (e.message||e), 'err'); }
 }
 var STRIPE_LINKS={starter:'https://buy.stripe.com/28E5kDdFo9PD6iT1B01oI0a',professional:'https://buy.stripe.com/9B68wP30K2nbgXx2F41oI0b',enterprise:'mailto:support@corverxis.com?subject=NexGenLife%20Enterprise%20Inquiry&body=Hi%20NexGenLife%20team%2C%0A%0AI%27m%20interested%20in%20the%20Enterprise%20plan.%20Please%20get%20in%20touch%20to%20discuss%20pricing%20and%20setup.%0A%0AOrganisation%3A%20%0AUse%20case%3A%20'};
 function openWaitlist(tierLabel,priceStr,tier){
@@ -3575,24 +3459,135 @@ function openWaitlist(tierLabel,priceStr,tier){
 }
 
 // Called directly from the paywall plan buttons (Starter / Professional / Enterprise)
-function paywallCheckout(tier) {
+async function paywallCheckout(tier) {
   if (tier === 'enterprise') {
-    // Not a payment — open the Enterprise contact form
     var pw = document.getElementById('paywallScreen'); if (pw) pw.style.display = 'none';
     openEnterpriseForm();
     return;
   }
-  var link = STRIPE_LINKS[tier];
-  if (!link) { toast('Plan not available — please contact support.', 'err'); return; }
-  localStorage.setItem('ngl_pending_plan', tier);
-  window.open(link, '_blank');
-  toast('Opening checkout for ' + tier.charAt(0).toUpperCase() + tier.slice(1) + ' plan…', 'ok');
+  toast('Opening checkout…', 'ok');
+  try {
+    var resp = await _nglApiFetch('/api/subscriptions/checkout', 'POST', { plan: tier });
+    var data = await resp.json();
+    if (!resp.ok || !data.url) { toast(data.error || 'Checkout failed — please try again.', 'err'); return; }
+    localStorage.setItem('ngl_pending_plan', tier);
+    window.open(data.url, '_blank');
+  } catch(e) {
+    // Fallback to direct Stripe link if backend is unreachable
+    var fallback = STRIPE_LINKS[tier];
+    if (fallback && !fallback.startsWith('mailto:')) { localStorage.setItem('ngl_pending_plan',tier); window.open(fallback,'_blank'); }
+    else { toast('Checkout unavailable — please try again shortly.', 'err'); }
+  }
 }
 // ─────────────────────────────────────────────────────────────────
 
 
 // ── NEXGENLIFE FREE TRIAL (5 docs) ───────────────────────────────
 // NGL_FREE_LIMIT is defined at top of auth script
+
+// ── Backend API helpers ───────────────────────────────────────────
+// All API calls go through here — handles auth token injection
+// and token refresh automatically
+// ── Backend API base URL ──────────────────────────────────────────
+// Points to the Express backend on Render.com
+// If frontend and backend are on the same origin, set to ''
+var _NGL_API_BASE = (function() {
+  // If served directly from Render (same origin) use relative paths
+  if (window.location.hostname === 'nexgenlife.onrender.com') return '';
+  // Otherwise (nesgenlife.studio or local) point to the Render backend
+  return 'https://nexgenlife.onrender.com';
+})();
+
+// ── API connectivity test with cold-start handling ────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  var attempts = 0;
+  var maxAttempts = 5;
+
+  function checkBackend() {
+    attempts++;
+    var controller = new AbortController();
+    var timeout = setTimeout(function(){ controller.abort(); }, 15000); // 15s timeout
+
+    fetch(_NGL_API_BASE + '/health', { signal: controller.signal })
+      .then(function(r){ clearTimeout(timeout); return r.json(); })
+      .then(function(d){
+        console.log('✅ Backend reachable:', d);
+        authMsg('', ''); // clear any warming up message
+      })
+      .catch(function(e){
+        clearTimeout(timeout);
+        console.warn('Backend check attempt ' + attempts + ':', e.message);
+        if (attempts < maxAttempts) {
+          // Show warming up message and retry
+          authMsg('Server warming up… (' + attempts + '/' + maxAttempts + ')', 'ok');
+          setTimeout(checkBackend, 8000); // retry every 8 seconds
+        } else {
+          console.error('❌ Backend NOT reachable after ' + maxAttempts + ' attempts:', e.message);
+          authMsg('Server unavailable — please refresh the page in a moment.', 'err');
+        }
+      });
+  }
+
+  checkBackend();
+});
+
+function _nglGetToken()        { return localStorage.getItem('ngl_access_token') || ''; }
+function _nglGetRefreshToken() { return localStorage.getItem('ngl_refresh_token') || ''; }
+function _nglStoreTokens(at, rt) {
+  if (at) localStorage.setItem('ngl_access_token', at);
+  if (rt) localStorage.setItem('ngl_refresh_token', rt);
+}
+function _nglClearTokens() {
+  localStorage.removeItem('ngl_access_token');
+  localStorage.removeItem('ngl_refresh_token');
+  window._nglCurrentUser = null;
+}
+
+async function _nglApiFetch(path, method, body) {
+  var token = _nglGetToken();
+  var opts = {
+    method: method || 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  };
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  if (body)  opts.body = JSON.stringify(body);
+
+  var resp;
+  try {
+    resp = await fetch(_NGL_API_BASE + path, opts);
+  } catch(e) {
+    // Failed to fetch — likely cold start. Wait and retry once.
+    console.warn('Fetch failed, retrying in 10s (cold start?):', e.message);
+    authMsg('Server warming up — retrying…', 'ok');
+    await new Promise(function(r){ setTimeout(r, 10000); });
+    resp = await fetch(_NGL_API_BASE + path, opts); // throws if still unreachable
+  }
+
+  // Auto-refresh on 401
+  if (resp.status === 401) {
+    var rt = _nglGetRefreshToken();
+    if (rt) {
+      try {
+        var refResp = await fetch(_NGL_API_BASE + '/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: rt }),
+        });
+        var refData = await refResp.json();
+        if (refResp.ok && refData.accessToken) {
+          _nglStoreTokens(refData.accessToken, refData.refreshToken);
+          opts.headers['Authorization'] = 'Bearer ' + refData.accessToken;
+          return fetch(_NGL_API_BASE + path, opts); // retry once
+        }
+      } catch(e) {}
+    }
+    // Refresh failed — sign out
+    _nglClearTokens();
+    var w = document.getElementById('authWall'); if (w) w.style.display = 'flex';
+  }
+  return resp;
+}
+// ─────────────────────────────────────────────────────────────────
 
 function nglTrialUsed() {
   var user = window._nglCurrentUser;
