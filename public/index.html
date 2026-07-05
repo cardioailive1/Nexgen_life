@@ -3501,26 +3501,30 @@ var _NGL_API_BASE = (function() {
 // ── API connectivity test with cold-start handling ────────────────
 document.addEventListener('DOMContentLoaded', function() {
   var attempts = 0;
-  var maxAttempts = 5;
+  var maxAttempts = 8;
+
+  // Keep-alive ping every 14 minutes to prevent Render free tier spin-down
+  setInterval(function() {
+    fetch(_NGL_API_BASE + '/health').catch(function(){});
+  }, 14 * 60 * 1000);
 
   function checkBackend() {
     attempts++;
     var controller = new AbortController();
-    var timeout = setTimeout(function(){ controller.abort(); }, 15000); // 15s timeout
+    var timeout = setTimeout(function(){ controller.abort(); }, 20000);
 
     fetch(_NGL_API_BASE + '/health', { signal: controller.signal })
       .then(function(r){ clearTimeout(timeout); return r.json(); })
       .then(function(d){
         console.log('✅ Backend reachable:', d);
-        authMsg('', ''); // clear any warming up message
+        authMsg('', '');
       })
       .catch(function(e){
         clearTimeout(timeout);
         console.warn('Backend check attempt ' + attempts + ':', e.message);
         if (attempts < maxAttempts) {
-          // Show warming up message and retry
-          authMsg('Server warming up… (' + attempts + '/' + maxAttempts + ')', 'ok');
-          setTimeout(checkBackend, 8000); // retry every 8 seconds
+          authMsg('Server warming up… please wait (' + attempts + '/' + maxAttempts + ')', 'ok');
+          setTimeout(checkBackend, 8000);
         } else {
           console.error('❌ Backend NOT reachable after ' + maxAttempts + ' attempts:', e.message);
           authMsg('Server unavailable — please refresh the page in a moment.', 'err');
