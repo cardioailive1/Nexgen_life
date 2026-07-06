@@ -60,7 +60,7 @@ services:
       - key: BCRYPT_ROUNDS
         value: "12"
       - key: RATE_LIMIT_MAX
-        value: "100"
+        value: "500"
       - key: AUDIT_LOG_RETENTION_DAYS
         value: "2555"
       - key: DATA_RETENTION_DAYS
