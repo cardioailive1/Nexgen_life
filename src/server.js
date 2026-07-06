@@ -90,6 +90,9 @@ app.use(morgan('combined', {
   skip: (req) => req.url === '/health',
 }));
 
+// ── Health check FIRST — before rate limiter so Render never gets 429 ────────
+app.use('/health', healthRoutes);
+
 // ── Global rate limiter ───────────────────────────────────────────────────────
 app.use(limiter);
 
@@ -103,7 +106,6 @@ app.use(express.static(path.join(__dirname, '../public'), {
 }));
 
 // ── API Routes ────────────────────────────────────────────────────────────────
-app.use('/health',          healthRoutes);
 app.use('/webhooks',        webhookRoutes);
 app.use('/auth',            authLimiter, authRoutes);
 app.use('/auth',            oauthRoutes);
